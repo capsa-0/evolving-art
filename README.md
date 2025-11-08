@@ -58,3 +58,20 @@ Outputs:
 Tweaks:
 - Edit `plot_shapes.py` to change the affine transforms, triangle vertices, or composite expression.
 - The core SDF and transforms live in `shapes/geometry.py`.
+
+## Plotting framework
+
+A small plotting module provides auto-bounds and rendering for any composed `Shape` (or a list of shapes):
+
+```python
+from plotting import render_to_file, autosize_bounds
+from shapes import UnitDisk, UnitSquare
+
+shape = (UnitDisk().scale(1.2).with_color(0.2, 0.8, 0.5) | UnitSquare().translate(0.8, 0.4).with_color(0.9, 0.2, 0.2))
+render_to_file(shape, out_path="plots/framework_demo.png", title="My composition")
+```
+
+- Auto-bounds: If you don’t pass `xlim`/`ylim`, the renderer samples a coarse grid to choose a tight extent.
+- You can also pass a list of shapes; it will be unioned automatically for rendering.
+
+See `plot_framework_demo.py` for a runnable example. It outputs `plots/framework_demo.png`.

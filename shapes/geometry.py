@@ -153,6 +153,55 @@ class UnitDisk(Shape):
     def sdf(self, point_xy: np.ndarray) -> float:
         return float(np.linalg.norm(point_xy) - 1.0)
 
+class Polygon(Shape):
+    """
+    Simple polygon defined by an ordered list of vertices (2D points).
+    Works for convex or concave simple polygons. Orientation can be CW or CCW.
+    Signed distance is negative inside, positive outside.
+    """
+    def __init__(self, vertices: list[np.ndarray] | np.ndarray):
+        verts = np.array(vertices, dtype=float)
+        if verts.ndim != 2 or verts.shape[1] != 2 or verts.shape[0] < 3:
+            raise ValueError("Polygon requires an array/list of N>=3 vertices of shape (N,2)")
+        self.vertices = verts
+
+    def sdf(self, point_xy: np.ndarray) -> float:
+        p = np.array(point_xy, dtype=float).reshape(2,)
+        verts = self.vertices
+        n = verts.shape[0]
+        # Distance to edges
+        min_dist2 = float("inf")
+        # Point-in-polygon (ray casting)
+        inside = False
+        px, py = p[0], p[1]
+        for i in range(n):
+            a = verts[i]
+            b = verts[(i + 1) % n]
+            # Segment distance
+            ab = b - a
+            ap = p - a
+            denom = ab @ ab
+            if denom > 0.0:
+                t = max(0.0, min(1.0, (ap @ ab) / denom))
+            else:
+                t = 0.0
+            closest = a + t * ab
+            d2 = float(np.sum((p - closest) ** 2))
+            if d2 < min_dist2:
+                min_dist2 = d2
+            # Ray casting for inside
+            xi, yi = a[0], a[1]
+            xj, yj = b[0], b[1]
+            intersects = ((yi > py) != (yj > py))
+            if intersects:
+                # Compute x coordinate of intersection with horizontal ray y=py
+                denom_y = (yj - yi) if (yj - yi) != 0.0 else 1e-18
+                x_int = (xj - xi) * (py - yi) / denom_y + xi
+                if px < x_int:
+                    inside = not inside
+        dist = math.sqrt(min_dist2)
+        return -dist if inside else dist
+
 class Colored(Shape):
     """
     Wrapper that assigns a constant RGB color to a shape.
@@ -188,6 +237,37 @@ class HalfSpace(Shape):
         return float(self.n @ point_xy + self.c)
 
 
+def _to_color(c: Optional[np.ndarray]) -> np.ndarray:
+    if c is None:
+        return np.zeros(3, dtype=float)
+    c = np.array(c, dtype=float).reshape(3,)
+    return np.clip(c, 0.0, 1.0)
+
+
+class ColorAlgebra:
+    """
+    Channel-wise color algebra in [0,1]^3.
+    Default uses:
+      - OR (union): 1 - (1-a)(1-b)  (probabilistic sum / screen-like)
+      - AND (intersection): a * b   (product t-norm)
+      - DIFF (a minus b): a * (1 - b)
+    """
+    @staticmethod
+    def or_color(a: np.ndarray, b: np.ndarray) -> np.ndarray:
+        return 1.0 - (1.0 - a) * (1.0 - b)
+
+    @staticmethod
+    def and_color(a: np.ndarray, b: np.ndarray) -> np.ndarray:
+        return a * b
+
+    @staticmethod
+    def diff_color(a: np.ndarray, b: np.ndarray) -> np.ndarray:
+        return a * (1.0 - b)
+
+
+DEFAULT_COLOR_ALGEBRA = ColorAlgebra()
+
+
 class UnionN(Shape):
     def __init__(self, *shapes: Shape):
         # flatten nested UnionN
@@ -205,14 +285,15 @@ class UnionN(Shape):
         return float(min(s.sdf(point_xy) for s in self.shapes))
 
     def evaluate(self, point_xy: np.ndarray) -> Tuple[float, Optional[np.ndarray]]:
-        # Choose the contributor with minimal SDF
-        best_d = None
-        best_c = None
+        # SDF: min; Color: OR-combine colors of inside contributors
+        ds: list[float] = []
+        color_acc = np.zeros(3, dtype=float)
         for s in self.shapes:
             d, c = s.evaluate(point_xy)
-            if best_d is None or d < best_d:
-                best_d, best_c = d, c
-        return float(best_d), best_c
+            ds.append(d)
+            if d <= 0.0:
+                color_acc = DEFAULT_COLOR_ALGEBRA.or_color(color_acc, _to_color(c))
+        return float(min(ds)), color_acc
 
 
 class Union(Shape):
@@ -226,10 +307,13 @@ class Union(Shape):
     def evaluate(self, point_xy: np.ndarray) -> Tuple[float, Optional[np.ndarray]]:
         da, ca = self.a.evaluate(point_xy)
         db, cb = self.b.evaluate(point_xy)
-        if da <= db:
-            return da, ca
-        else:
-            return db, cb
+        d = float(min(da, db))
+        color = np.zeros(3, dtype=float)
+        if da <= 0.0:
+            color = DEFAULT_COLOR_ALGEBRA.or_color(color, _to_color(ca))
+        if db <= 0.0:
+            color = DEFAULT_COLOR_ALGEBRA.or_color(color, _to_color(cb))
+        return d, color
 
 
 class IntersectionN(Shape):
@@ -249,14 +333,20 @@ class IntersectionN(Shape):
         return float(max(s.sdf(point_xy) for s in self.shapes))
 
     def evaluate(self, point_xy: np.ndarray) -> Tuple[float, Optional[np.ndarray]]:
-        # Choose the contributor with maximal SDF
-        best_d = None
-        best_c = None
+        # SDF: max; Color: AND-combine colors of inside contributors
+        ds: list[float] = []
+        color_acc = np.ones(3, dtype=float)
+        any_outside = False
         for s in self.shapes:
             d, c = s.evaluate(point_xy)
-            if best_d is None or d > best_d:
-                best_d, best_c = d, c
-        return float(best_d), best_c
+            ds.append(d)
+            if d <= 0.0:
+                color_acc = DEFAULT_COLOR_ALGEBRA.and_color(color_acc, _to_color(c))
+            else:
+                any_outside = True
+        # If any contributor is outside, intersection is outside -> color shouldn't matter
+        # but AND with zeros already pushes toward zeros; keep it consistent.
+        return float(max(ds)), (np.zeros(3, dtype=float) if any_outside else color_acc)
 
 
 class Intersection(Shape):
@@ -270,10 +360,12 @@ class Intersection(Shape):
     def evaluate(self, point_xy: np.ndarray) -> Tuple[float, Optional[np.ndarray]]:
         da, ca = self.a.evaluate(point_xy)
         db, cb = self.b.evaluate(point_xy)
-        if da >= db:
-            return da, ca
+        d = float(max(da, db))
+        if da <= 0.0 and db <= 0.0:
+            color = DEFAULT_COLOR_ALGEBRA.and_color(_to_color(ca), _to_color(cb))
         else:
-            return db, cb
+            color = np.zeros(3, dtype=float)
+        return d, color
 
 
 class Difference(Shape):
@@ -288,8 +380,11 @@ class Difference(Shape):
         da, ca = self.a.evaluate(point_xy)
         db, cb = self.b.evaluate(point_xy)
         d = float(max(da, -db))
-        # Difference region is subset of A; color with A's color for inside
-        return d, ca
+        # Color: A AND NOT B  -> a * (1 - b)
+        color_a = _to_color(ca) if da <= 0.0 else np.zeros(3, dtype=float)
+        color_b = _to_color(cb) if db <= 0.0 else np.zeros(3, dtype=float)
+        color = DEFAULT_COLOR_ALGEBRA.diff_color(color_a, color_b)
+        return d, color
 
 
 def sample_sdf_grid(

@@ -8,6 +8,7 @@ import matplotlib.pyplot as plt
 from shapes import (
     UnitSquare,
     UnitDisk,
+    Polygon,
     Colored,
     HalfSpace,
     Affine2D,
@@ -65,27 +66,6 @@ def build_ellipse():
     A = np.column_stack([a1, a2])
     T = Affine2D(A=A, t=center)
     return Transformed(UnitDisk(), T), T
-
-
-def triangle_from_vertices(v0: np.ndarray, v1: np.ndarray, v2: np.ndarray) -> Intersection:
-    verts = [np.array(v0, dtype=float), np.array(v1, dtype=float), np.array(v2, dtype=float)]
-    def inward_normal(pa: np.ndarray, pb: np.ndarray, pc: np.ndarray) -> np.ndarray:
-        # Edge from pa->pb, outward normal is rotate +90: (dy, -dx), inward points toward pc
-        edge = pb - pa
-        n_out = np.array([edge[1], -edge[0]], dtype=float)
-        # Flip if pointing toward pc (dot > 0) to get inward
-        if n_out @ (pc - pa) > 0:
-            n_in = -n_out
-        else:
-            n_in = n_out
-        return n_in
-    n0 = inward_normal(verts[0], verts[1], verts[2])
-    n1 = inward_normal(verts[1], verts[2], verts[0])
-    n2 = inward_normal(verts[2], verts[0], verts[1])
-    H0 = HalfSpace(n0, c=-n0 @ verts[0])
-    H1 = HalfSpace(n1, c=-n1 @ verts[1])
-    H2 = HalfSpace(n2, c=-n2 @ verts[2])
-    return Intersection(Intersection(H0, H1), H2)
 
 
 def bbox_for_triangle(v0: np.ndarray, v1: np.ndarray, v2: np.ndarray, margin: float = 0.2):
@@ -156,7 +136,7 @@ class UserCompositeShape:
         # Base shapes with colors
         ellipse = UnitDisk().scale(1.0, 0.6).rotate(0.4).translate(-0.3, 0.0).scale(2.0).with_color(0.2, 0.8, 0.5)
         square = UnitSquare().scale(1.4, 0.9).rotate(-0.2).translate(1.2, 0.6).with_color(0.9, 0.2, 0.2)
-        tri = triangle_from_vertices(np.array([0.0, 1.4]), np.array([-1.2, -0.6]), np.array([1.3, -0.7])).with_color(0.2, 0.4, 0.9)
+        tri = Polygon([np.array([0.0, 1.4]), np.array([-1.2, -0.6]), np.array([1.3, -0.7])]).with_color(0.2, 0.4, 0.9)
         # Compose: (ellipse ∪ tri) − square
         self.shape = (ellipse | tri) - square
 
@@ -173,7 +153,7 @@ def main():
     v0 = np.array([0.0, 1.4])
     v1 = np.array([-1.2, -0.6])
     v2 = np.array([1.3, -0.7])
-    triangle = triangle_from_vertices(v0, v1, v2)
+    triangle = Polygon([v0, v1, v2])
 
     # Bboxes
     pxlim, pylim = bbox_for_transformed_square(T_par, margin=0.3)
