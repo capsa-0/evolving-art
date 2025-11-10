@@ -3,8 +3,6 @@ from __future__ import annotations
 from typing import Iterable, Optional, Tuple, Union
 import numpy as np
 import matplotlib.pyplot as plt
-import os
-import multiprocessing as mp
 
 from shapes import Shape, UnionN
 
@@ -33,17 +31,14 @@ def autosize_bounds(
     xs = np.linspace(xmin, xmax, coarse_resolution)
     ys = np.linspace(ymin, ymax, coarse_resolution)
     X, Y = np.meshgrid(xs, ys)
-    inside_points = []
-    for i in range(X.shape[0]):
-        for j in range(X.shape[1]):
-            d, _ = shape.evaluate(np.array([X[i, j], Y[i, j]], dtype=float))
-            if d <= 0.0:
-                inside_points.append((X[i, j], Y[i, j]))
-    if not inside_points:
+    pts = np.stack([X.ravel(), Y.ravel()], axis=1)
+    dists, _ = shape.evaluate_many(pts)
+    inside_mask = dists <= 0.0
+    if not np.any(inside_mask):
         return (xmin, xmax), (ymin, ymax)
-    pts = np.array(inside_points, dtype=float)
-    pxmin, pymin = pts.min(axis=0)
-    pxmax, pymax = pts.max(axis=0)
+    inside_pts = pts[inside_mask]
+    pxmin, pymin = inside_pts.min(axis=0)
+    pxmax, pymax = inside_pts.max(axis=0)
     return (float(pxmin - margin), float(pxmax + margin)), (float(pymin - margin), float(pymax + margin))
 
 
@@ -55,70 +50,25 @@ def sample_shape_rgba(
 ) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
     """
     Sample a shape (or list of shapes) over a grid, returning X, Y, Z(sdf), RGBA.
+    Vectorized across the full grid using Shape.evaluate_many.
     """
     shape = _as_shape(shape)
     xs = np.linspace(xlim[0], xlim[1], resolution)
     ys = np.linspace(ylim[0], ylim[1], resolution)
     X, Y = np.meshgrid(xs, ys)
-    Z = np.empty_like(X, dtype=float)
+    pts = np.stack([X.ravel(), Y.ravel()], axis=1)
+    dists, colors = shape.evaluate_many(pts)
+    Z = dists.reshape(X.shape)
     RGBA = np.zeros((resolution, resolution, 4), dtype=float)
-    fallback = np.array([0.6, 0.6, 0.6], dtype=float)
-    for i in range(resolution):
-        row_pts = np.stack([X[i, :], Y[i, :]], axis=1)
-        evals = [shape.evaluate(pt) for pt in row_pts]
-        d_row = np.fromiter((ev[0] for ev in evals), dtype=float, count=row_pts.shape[0])
-        Z[i, :] = d_row
-        inside_mask = d_row <= 0.0
-        if inside_mask.any():
-            # Build color row with fallback
-            c_list = []
-            for _, c in evals:
-                if c is None:
-                    c_list.append(fallback)
-                else:
-                    c_arr = np.asarray(c, dtype=float).reshape(3,)
-                    c_list.append(np.clip(c_arr, 0.0, 1.0))
-            c_row = np.vstack(c_list)
-            RGBA[i, :, :3] = np.where(inside_mask[:, None], c_row, 0.0)
-            RGBA[i, :, 3] = inside_mask.astype(float)
-        else:
-            RGBA[i, :, :3] = 0.0
-            RGBA[i, :, 3] = 0.0
+    inside_mask = (Z <= 0.0)
+    if colors is None:
+        c = np.tile(np.array([0.6, 0.6, 0.6], dtype=float).reshape(1, 3), (pts.shape[0], 1))
+    else:
+        c = np.clip(np.asarray(colors, dtype=float).reshape(-1, 3), 0.0, 1.0)
+    Cimg = c.reshape(resolution, resolution, 3)
+    RGBA[:, :, :3] = np.where(inside_mask[:, :, None], Cimg, 0.0)
+    RGBA[:, :, 3] = inside_mask.astype(float)
     return X, Y, Z, RGBA
-
-
-# ---- Multiprocessing helpers ----
-_SHAPE = None
-_XS = None
-_YS = None
-_FALLBACK = None
-
-
-def _init_worker(shape_obj: Shape, xlim: Tuple[float, float], ylim: Tuple[float, float], resolution: int, fallback: np.ndarray):
-    global _SHAPE, _XS, _YS, _FALLBACK
-    _SHAPE = shape_obj
-    _XS = np.linspace(xlim[0], xlim[1], resolution)
-    _YS = np.linspace(ylim[0], ylim[1], resolution)
-    _FALLBACK = fallback
-
-
-def _eval_row(i: int):
-    xs = _XS
-    y = _YS[i]
-    row_pts = np.stack([xs, np.full_like(xs, y)], axis=1)
-    evals = [_SHAPE.evaluate(pt) for pt in row_pts]
-    d_row = np.fromiter((ev[0] for ev in evals), dtype=float, count=row_pts.shape[0])
-    inside_mask = d_row <= 0.0
-    c_list = []
-    for _, c in evals:
-        if c is None:
-            c_list.append(_FALLBACK)
-        else:
-            c_arr = np.asarray(c, dtype=float).reshape(3,)
-            c_list.append(np.clip(c_arr, 0.0, 1.0))
-    c_row = np.vstack(c_list)
-    alpha_row = inside_mask.astype(np.float64)
-    return i, d_row, alpha_row, c_row
 
 
 def render_to_axes(
@@ -134,27 +84,15 @@ def render_to_axes(
     interpolation: str = "none",
     parallel: bool = True,
     workers: Optional[int] = None,
+    show_axes: bool = False,
+    show_grid: bool = False,
+    frame_only: bool = True,
 ) -> None:
     shape = _as_shape(shape)
     if xlim is None or ylim is None:
         xlim, ylim = autosize_bounds(shape)
-    # Choose between single-process and parallel sampling
-    if parallel:
-        if workers is None:
-            workers = max(1, (os.cpu_count() or 2) - 0)
-        xs = np.linspace(xlim[0], xlim[1], resolution)
-        ys = np.linspace(ylim[0], ylim[1], resolution)
-        X, Y = np.meshgrid(xs, ys)
-        Z = np.empty_like(X, dtype=float)
-        RGBA = np.zeros((resolution, resolution, 4), dtype=float)
-        fallback = np.array([0.6, 0.6, 0.6], dtype=float)
-        with mp.Pool(processes=workers, initializer=_init_worker, initargs=(shape, xlim, ylim, resolution, fallback)) as pool:
-            for i, d_row, alpha_row, c_row in pool.imap_unordered(_eval_row, range(resolution), chunksize=max(1, resolution // (workers * 8))):
-                Z[i, :] = d_row
-                RGBA[i, :, :3] = np.where(alpha_row[:, None] > 0.0, c_row, 0.0)
-                RGBA[i, :, 3] = alpha_row
-    else:
-        X, Y, Z, RGBA = sample_shape_rgba(shape, xlim, ylim, resolution=resolution)
+    # Single-process, fully vectorized sampling
+    X, Y, Z, RGBA = sample_shape_rgba(shape, xlim, ylim, resolution=resolution)
     ax.imshow(
         RGBA,
         extent=(xlim[0], xlim[1], ylim[0], ylim[1]),
@@ -166,10 +104,18 @@ def render_to_axes(
         ax.contour(X, Y, Z, levels=[0.0], colors=[edge_color], linewidths=edge_width, antialiased=True)
     if title:
         ax.set_title(title)
-    ax.set_aspect("equal", adjustable="box")
-    ax.set_xlim(*xlim)
-    ax.set_ylim(*ylim)
-    ax.grid(True, alpha=0.2, linestyle="--")
+    if show_axes:
+        ax.set_aspect("equal", adjustable="box")
+        ax.set_xlim(*xlim)
+        ax.set_ylim(*ylim)
+        ax.grid(show_grid, alpha=0.2, linestyle="--")
+        if frame_only:
+            # Keep spines, hide ticks and labels
+            ax.set_xticks([])
+            ax.set_yticks([])
+            ax.tick_params(bottom=False, left=False, labelbottom=False, labelleft=False)
+    else:
+        ax.axis("off")
 
 
 def render_to_file(
@@ -186,6 +132,9 @@ def render_to_file(
     interpolation: str = "none",
     parallel: bool = True,
     workers: Optional[int] = None,
+    show_axes: bool = False,
+    show_grid: bool = False,
+    frame_only: bool = True,
     dpi: int = 220,
 ) -> None:
     fig, ax = plt.subplots(1, 1, figsize=figsize, constrained_layout=True)
@@ -202,6 +151,9 @@ def render_to_file(
         interpolation=interpolation,
         parallel=parallel,
         workers=workers,
+        show_axes=show_axes,
+        show_grid=show_grid,
+        frame_only=frame_only,
     )
     fig.savefig(out_path, dpi=dpi)
     plt.close(fig)

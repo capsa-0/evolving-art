@@ -59,8 +59,11 @@ def render_population_grid(population: Sequence[CompositionGenome],
                 ax,
                 shape,
                 resolution=resolution,
-                title=f"#{idx}",
+                title=f"{idx}",
                 draw_edges=draw_edges,
+                show_axes=True,
+                show_grid=False,
+                frame_only=True,
             )
         except Exception as e:
             ax.text(0.5, 0.5, f"Error\n{e}", ha="center", va="center")
@@ -75,20 +78,27 @@ def render_population_grid(population: Sequence[CompositionGenome],
     plt.close(fig)
 
 
-def ask_user_likes(n_items: int) -> List[int]:
-    print(f"Enter indices you like (0 to {n_items - 1}), separated by spaces (or leave empty):")
+def ask_user_likes(n_items: int) -> Tuple[List[int], List[int]]:
+    print(f"Enter indices you like (0 to {n_items - 1}), optionally add --save i j to save HQ:")
     s = input("> ").strip()
     if not s:
-        return []
-    picks: List[int] = []
+        return [], []
+    likes: List[int] = []
+    saves: List[int] = []
+    save_mode = False
     for tok in s.replace(",", " ").split():
+        if tok.lower() in ("--save", "save", "--save:"):
+            save_mode = True
+            continue
         try:
             v = int(tok)
             if 0 <= v < n_items:
-                picks.append(v)
+                (saves if save_mode else likes).append(v)
         except ValueError:
             pass
-    return sorted(set(picks))
+    likes = sorted(set(likes))
+    saves = sorted(set(saves))
+    return likes, saves
 
 
 def evolve_one_generation(rng: np.random.Generator,
