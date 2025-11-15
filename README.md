@@ -23,7 +23,7 @@ This project builds a full graphical application around a genetic-art workflow. 
 | Population browser & metadata                          |         ❌        |                 **New**                 |
 | Live mutation controls                                 |         ❌        |                 **New**                 |
 | Interactive selection-based evolution                  |       Basic      |               **Enhanced**              |
-| PNG/SVG export + generation grids                      |         ❌        |                 **New**                 |
+| PNG/SVG export + generation grids                      |         ❌        |                 **New SVG export**     |
 
 ---
 
