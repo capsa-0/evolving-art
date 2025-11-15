@@ -45,29 +45,30 @@ small_rotated = shape.scale(0.5).rotate(0.6).translate(0.2, -0.3)
 conda env create -f environment.yml
 ```
 
-## Plotting
+## Rendering
 
 - Render any shape (or list of shapes) with auto-bounds:
 
 ```python
-from plotting import render_to_file
-render_to_file(shape, out_path="plots/my_shape.png", title="My composition")
+from src.rendering.raster import render_shape_to_file
+
+render_shape_to_file(shape, out_path="plots/my_shape.png", title="My composition")
 ```
 
 - No outline by default; enable if desired: `draw_edges=True`.
 - Pass explicit `xlim`/`ylim` to skip auto-bounds.
-- You can also pass a list: `render_to_file([shape1, shape2], ...)`.
+- You can also pass a list: `render_shape_to_file([shape1, shape2], ...)`.
 
-## Plotting framework
+## Rendering framework
 
-A small plotting module provides auto-bounds and rendering for any composed `Shape` (or a list of shapes):
+A small rendering module provides auto-bounds and rendering for any composed `Shape` (or a list of shapes):
 
 ```python
-from plotting import render_to_file, autosize_bounds
-from shapes import UnitDisk, UnitSquare, Polygon
+from src.rendering.raster import render_shape_to_file, autosize_bounds
+from src.core.shapes import UnitDisk, UnitSquare, Polygon
 
 shape = (UnitDisk().scale(1.2).with_color(0.2, 0.8, 0.5) | UnitSquare().translate(0.8, 0.4).with_color(0.9, 0.2, 0.2))
-render_to_file(shape, out_path="plots/framework_demo.png", title="My composition")
+render_shape_to_file(shape, out_path="plots/framework_demo.png", title="My composition")
 ```
 
 - Auto-bounds: If you don’t pass `xlim`/`ylim`, the renderer samples a coarse grid to choose a tight extent.
